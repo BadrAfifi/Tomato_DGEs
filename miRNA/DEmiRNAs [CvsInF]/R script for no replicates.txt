@@ -1,0 +1,150 @@
+
+
+edgeR is a package for the differential expression analysis of digital gene expression data, that is,
+of count data arising from DNA sequencing technologies.
+It is especially designed for differential expression analyses of RNA-Seq or SAGE data,
+or differential marking analyses of ChIP-Seq data.
+edgeR implements novel statistical methods based on the negative binomial distribution as a model for count variability,
+including empirical Bayes methods, exact tests, and generalized linear models.
+The package is especially suitable for analysing designed experiments with multiple experimental factors but possibly small numbers of replicates.
+It has unique abilities to model transcript specific variation even in small samples,
+a capability essential for prioritizing genes or transcripts that have consistent effects across replicates.
+
+#=============================================================================================
+library(tidyverse)
+library(edgeR)
+
+# Load count files
+control_counts <- read.table("unifs1.txt")
+treated_counts <- read.table("infs1.txt")
+
+All <- as.data.frame(c(control_counts,treated_counts))
+All <- All[-3]
+
+rownames(All) <- All$V1
+All <- All[-1]
+
+names(All)[1] <- "V1"
+names(All)[2] <- "V2"
+
+All
+All1 <- All
+
+All2 <- as.data.frame(c(All,All1))
+rownames(All2) <- row.names(All)
+
+x <- as.matrix(All2)
+#==============================================================
+
+
+# 2. Construct DGEList and add group information at the same time
+sampleinfo <- data.frame(
+  sample = colnames(x),
+  condition = c("ctrl", "treat", "ctrl", "treat"),
+  batch = c("I", "I", "II", "II")
+)#Set batch, remove batch effect
+
+coldata <- data.frame(row.names = sampleinfo$sample, 
+                      condition = factor(sampleinfo$condition, levels = c("ctrl","treat")), 
+                      batch = factor(sampleinfo$batch))
+
+
+y <- DGEList(counts=x, group=coldata$condition) #Note that the difference comparison direction is the latter of condition
+#- the former, that is, treat-ctrl, which is opposite to DESeq2
+
+# 3. Filter low expression genes
+keep <- filterByExpr(y)
+y <- y[keep,,keep.lib.sizes=FALSE]
+
+# 4. TMM standardization
+y <- calcNormFactors(y)
+
+# 5.Estimating dispersions 
+# Batch effects can be removed here 
+#design <- model.matrix(~ coldata$batch + coldata$condition)
+
+design <- model.matrix(~ coldata$condition)
+y <- estimateDisp(y,design)
+
+# 6. Calculate the difference
+## 6.1 exact test
+#et <- exactTest(y)
+#res <- topTags(et,n=30000)$table
+#
+
+## 6.2 quasi-likelihood (QL) F-test, this method is less strict than the likelihood ratio test
+#fit <- glmQLFit(y,design)
+#qlf <- glmQLFTest(fit,coef=2)
+#res <- topTags(qlf,n=30000)$table
+
+# 6.3 likelihood ratio test
+fit <- glmFit(y,design)
+lrt <- glmLRT(fit,coef=2)
+res <- topTags(lrt,n=30000)$table
+
+res$gene_id <- rownames(res)
+
+# 7. Screen differentially expressed genes
+
+p <- log10(0.05) * (-1)
+fc <- log2(2)
+degs <- res %>%
+  select(gene_id,logFC,logCPM,LR,PValue,FDR) %>%  #
+  mutate(logp = log10(PValue) * (-1)) %>%
+  mutate(type = if_else(logp > p, if_else(logFC > fc, "Up", if_else(logFC < (-fc), "Down", "N.s")), "N.s")) %>%
+  arrange(type)
+
+table(degs$type)
+write.table(degs, "degs_edgeR.txt", row.names = F, sep='\t')
+
+degs %>%
+  filter(logFC < 10) %>%
+  filter(logp < 50) %>%
+  ggplot(aes(logFC, logp)) +
+  geom_point(aes(colour = type), alpha = 0.8, size = 0.8) +
+  scale_colour_manual(values = c("#3C5488FF", "grey", "#DC0000FF")) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1))) +
+  # geom_vline(xintercept = c(-fc, fc), linetype = 2) +  #添加指示线
+  # geom_hline(yintercept = p * (-1), linetype = 2) +
+  scale_x_continuous(breaks = seq(-4, 4, 2), labels = seq(-4, 4, 2), limits = c(-5, 5)) +
+  labs(x = quote(log[2] ~ FoldChange), y = quote(-log[10] ~ pvalue), colour = "") +
+  theme_light() +
+  theme(
+    panel.border = element_rect(colour = "black"),
+    axis.ticks = element_line(colour = "black"),
+    axis.text = element_text(colour = "black", size = 14),
+    axis.title = element_text(size = 14),
+    legend.key.height = unit(0.4, "cm"), legend.key.width = unit(0.4, "cm")
+  )
+
+
+ggsave("vocalno.jpg", width = 10, height = 8, dpi = 1200, units = "cm")
+## Does not set the analysis of repeated data
+
+#==============[What to do if you have no replicates: edgeR]=============================
+#Simply pick a reasonable dispersion value, based on your experience with similar data, 
+#and use that for exactTest or glmFit. Typical values for the common BCV (square-root 
+#dispersion) for datasets arising from well-controlled experiments are 0.4 for human data, 
+#0.1 for data on genetically identical model organisms or 0.01 for technical replicates.
+bcv <- 0.2
+counts <- matrix( rnbinom(40,size=1/bcv^2,mu=10), 20,2)
+y <- DGEList(counts=counts, group=1:2)
+et <- exactTest(y, dispersion=bcv^2)
+y1 <- y
+y1$samples$group <- 1
+y0 <- estimateDisp(y1[housekeeping,], trend="none", tagwise=FALSE)
+y$common.dispersion <- y0$common.dispersion
+fit <- glmFit(y, design)
+lrt <- glmLRT(fit)
+
+#=============================================================================================
+
+Normalization is only necessary for sample-specific effects:
+edgeR is concerned with differential expression analysis rather than with the quantification of expression levels.
+It is concerned with relative changes in expression levels between conditions,
+but not directly with estimating absolute expression levels.
+This greatly simplifies the technical influences that need to be taken into account,
+because any technical factor that is unrelated to the experimental conditions should cancel out of any differential expression analysis.
+For example, read counts can generally be expected to be proportional to length as well as to expression for any transcript,
+but edgeR does not generally need to adjust for gene length because gene length has the same relative influence on the read counts for each RNA sample.
+For this reason, normalization issues arise only to the extent that technical factors have sample-specific effects.

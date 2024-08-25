@@ -1,0 +1,9 @@
+What to do if you have no replicates
+edgeR is primarily intended for use with data including biological replication. Nevertheless,
+RNA-Seq and ChIP-Seq are still expensive technologies, so it sometimes happens that only
+one library can be created for each treatment condition. In these cases there are no replicate
+libraries from which to estimate biological variability. In this situation, the data analyst is
+faced with the following choices, none of which are ideal. We do not recommend any of
+these choices as a satisfactory alternative for biological replication. Rather, they are the best
+that can be done at the analysis stage, and options 2–4 may be better than assuming that
+biological variability is absent.
